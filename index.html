@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Love Heart</title>
+<style>
+  :root { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #060208; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; background: #060208; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script>
+(function () {
+  // ---- константы (как в love.py) ----
+  const SC = 21, OY = 20, DURATION = 10, TICK = 16, ANIM = 42, LIFT = 34, GAP = 7;
+  const SIZES = [9, 10, 11, 12];
+  const FONT = "Arial, 'Noto Sans', sans-serif";
+  const BG = "#060208";
+  const W = 800, H = 800;
+  const PT = 1; // pt -> px (как в Tk при 72 dpi)
+
+  const PHRASES = [
+    "I love you", "Seni seviyorum", "Te amo", "Je t'aime",
+    "Ich liebe dich", "Ti amo", "Eu te amo", "Я тебя люблю",
+    "사랑해", "愛してる", "我爱你", "मैं तुमसे प्यार करता हूँ",
+    "Σ' αγαπώ", "Ik hou van jou", "Jag älskar dig", "Kocham cię",
+    "ฉันรักเธอ", "Anh yêu em", "Aku cinta kamu", "Я тебе кохаю"
+  ];
+
+  // ---- детерминированный random (seed 11) ----
+  let seed = 11;
+  function rnd() {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  const uniform = (a, b) => a + (b - a) * rnd();
+  const choice = arr => arr[Math.floor(rnd() * arr.length)];
+  function shuffle(a) {
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(rnd() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+  }
+
+  // ---- canvas ----
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d");
+  let scale = 1;
+  function resize() {
+    const size = Math.min(window.innerWidth, window.innerHeight);
+    const dpr = window.devicePixelRatio || 1;
+    cv.style.width = size + "px";
+    cv.style.height = size + "px";
+    cv.width = Math.round(size * dpr);
+    cv.height = Math.round(size * dpr);
+    scale = (size * dpr) / W;
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  const mctx = document.createElement("canvas").getContext("2d");
+  function fontStr(size, extra) { return "bold " + ((size + (extra || 0)) * PT) + "px " + FONT; }
+  function measure(text, size) { mctx.font = fontStr(size); return mctx.measureText(text).width * 1.03 + 2; }
+  function linespace(size) { return size * PT * 1.2; }
+
+  // ---- цвет ----
+  const hx = c => "#" + c.map(v => Math.floor(Math.max(0, Math.min(1, v)) * 255)
+                                  .toString(16).padStart(2, "0")).join("");
+  const mix = (a, b, k) => a.map((p, i) => p + (b[i] - p) * k);
+  const dim = (c, k) => c.map(v => v * k);
+  const clamp = v => Math.max(0, Math.min(1, v));
+  const BGC = [1, 3, 5].map(i => parseInt(BG.substr(i, 2), 16) / 255);
+  const FLASH = [1.0, 0.78, 0.78];
+
+  // ---- сердце ----
+  function heart(a) {
+    const x = 16 * Math.pow(Math.sin(a), 3);
+    const y = 13 * Math.cos(a) - 5 * Math.cos(2 * a) - 2 * Math.cos(3 * a) - Math.cos(4 * a);
+    return [x * SC, y * SC + OY];
+  }
+  const POLY = [];
+  for (let i = 0; i < 720; i++) POLY.push(heart(2 * Math.PI * i / 720));
+  const EDGES = POLY.map((p, i) => [p, POLY[(i + 1) % POLY.length]]);
+  const YMAX = Math.max(...POLY.map(p => p[1]));
+  const YMIN = Math.min(...POLY.map(p => p[1]));
+  const CY = (YMAX + YMIN) / 2;
+
+  function spans(y) {
+    const xs = [];
+    for (const [[x1, y1], [x2, y2]] of EDGES) {
+      if ((y1 <= y && y < y2) || (y2 <= y && y < y1)) {
+        xs.push(x1 + (y - y1) * (x2 - x1) / (y2 - y1));
+      }
+    }
+    xs.sort((a, b) => a - b);
+    const out = [];
+    for (let i = 0; i + 1 < xs.length; i += 2) out.push([xs[i], xs[i + 1]]);
+    return out;
+  }
+  function intersect(A, B) {
+    const out = [];
+    for (const a of A) for (const b of B) {
+      const lo = Math.max(a[0], b[0]), hi = Math.min(a[1], b[1]);
+      if (hi - lo > 14) out.push([lo, hi]);
+    }
+    return out;
+  }
+
+  let queue = [];
+  function nextPhrase() {
+    if (!queue.length) { queue = PHRASES.slice(); shuffle(queue); }
+    return queue.shift();
+  }
+  const mathDist = (x, y) => Math.hypot(x / (16 * SC), (y - CY) / (14.5 * SC));
+
+  function build() {
+    const rowH = Math.max(...SIZES.map(linespace)) + 4;
+    const half = rowH / 2;
+    const placed = [];
+    let y = YMAX - half;
+    while (y > YMIN + half) {
+      const row = intersect(spans(y + half), spans(y - half));
+      for (let [lo, hi] of row) {
+        lo += 4; hi -= 4;
+        let cur = lo;
+        const line = [];
+        while (true) {
+          let fit = null;
+          for (let k = 0; k < 10; k++) {
+            const text = nextPhrase();
+            const size = choice(SIZES);
+            const w = measure(text, size);
+            if (cur + w <= hi) { fit = [text, size, w]; break; }
+          }
+          if (!fit) break;
+          const [text, size, w] = fit;
+          line.push([cur + w / 2, text, size, w]);
+          cur += w + GAP;
+        }
+        if (!line.length) continue;
+        if (line.length > 1) {
+          const last = line[line.length - 1];
+          const left = hi - (last[0] + last[3] / 2);
+          line.forEach((it, i) => { it[0] += left * i / (line.length - 1); });
+        } else {
+          line[0][0] = (lo + hi) / 2;
+        }
+        line.forEach(([x, text, size], i) => {
+          placed.push({ x, y, text, size, edge: i === 0 || i === line.length - 1 });
+        });
+      }
+      y -= rowH;
+    }
+
+    const wine = [0.58, 0.0, 0.09], crimson = [0.90, 0.05, 0.14], blood = [0.98, 0.10, 0.16];
+    for (const p of placed) {
+      const rad = Math.min(1.0, mathDist(p.x, p.y));
+      let base = mix(wine, crimson, 0.25 + 0.75 * rad);
+      base = mix(base, blood, uniform(0, 0.35) + (p.edge ? 0.3 : 0));
+      p.color = base.map(v => Math.min(1, v));
+      p.rad = rad;
+    }
+    const edges = placed.filter(p => p.edge);
+    const inner = placed.filter(p => !p.edge);
+    const TWO = 2 * Math.PI;
+    const ang = p => ((Math.atan2(p.x, p.y - CY) % TWO) + TWO) % TWO;
+    edges.sort((a, b) => ang(a) - ang(b));
+    inner.forEach(p => { p.key = -p.rad + uniform(0, 0.08); });
+    inner.sort((a, b) => a.key - b.key);
+    return edges.concat(inner);
+  }
+
+  // ---- анимация ----
+  const ORDER = build();
+  const RATE = ORDER.length / (DURATION * 1000 / TICK);
+  let idx = 0, acc = 0, spawning = true, shimmering = false;
+  const all = [];    // порядок отрисовки = порядок создания
+  let active = [];
+
+  function spawn(p) {
+    p.sx = p.x; p.sy = -p.y;
+    p.f = 0; p.dx = uniform(-10, 10);
+    p.px = p.sx; p.py = p.sy - LIFT;
+    p.shadowC = BGC; p.haloC = BGC; p.mainC = BGC;
+    all.push(p); active.push(p);
+  }
+
+  function animate(p) {
+    p.f += 1;
+    const u = clamp(p.f / ANIM);
+    const e = 1 - Math.pow(1 - u, 3);
+    const c = p.color;
+    p.px = p.sx + p.dx * (1 - e);
+    p.py = p.sy - (1 - e) * LIFT;
+    p.shadowC = mix(BGC, dim(c, 0.30), e);
+    p.haloC = mix(BGC, dim(c, 0.20), e * e);
+    const flash = 0.75 * Math.sin(Math.PI * clamp((u - 0.55) / 0.45));
+    p.mainC = mix(mix(BGC, c, Math.pow(e, 1.5)), FLASH, flash);
+    if (u >= 1) {
+      p.px = p.sx; p.py = p.sy; p.mainC = c;
+      return false;
+    }
+    return true;
+  }
+
+  function step() {
+    if (spawning) {
+      acc += RATE;
+      while (acc >= 1) {
+        acc -= 1;
+        if (idx >= ORDER.length) { spawning = false; break; }
+        spawn(ORDER[idx++]);
+      }
+    }
+    active = active.filter(animate);
+    if (!spawning && !active.length && !shimmering) {
+      shimmering = true;
+      shimmer();
+    }
+  }
+
+  function shimmer() {
+    const p = choice(all);
+    p.mainC = mix(p.color, FLASH, 0.6);
+    setTimeout(() => { p.mainC = p.color; }, 260);
+    setTimeout(shimmer, 140);
+  }
+
+  // ---- отрисовка ----
+  function draw() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.setTransform(scale, 0, 0, scale, scale * W / 2, scale * H / 2);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (const p of all) {
+      ctx.font = fontStr(p.size);
+      ctx.fillStyle = hx(p.shadowC);
+      ctx.fillText(p.text, p.sx + 2, p.sy + 3);
+      ctx.font = fontStr(p.size, 1);
+      ctx.fillStyle = hx(p.haloC);
+      ctx.fillText(p.text, p.sx + (p.px - p.sx), p.py);
+      ctx.font = fontStr(p.size);
+      ctx.fillStyle = hx(p.mainC);
+      ctx.fillText(p.text, p.px, p.py);
+    }
+  }
+
+  let last = performance.now() + 200, tickAcc = 0;
+  function frame(now) {
+    const dt = now - last;
+    last = now;
+    if (dt > 0) {
+      tickAcc += Math.min(dt, 200);
+      while (tickAcc >= TICK) { tickAcc -= TICK; step(); }
+    }
+    draw();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
